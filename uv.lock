@@ -546,7 +546,6 @@ dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },
     { name = "youtube-transcript-api" },
-    { name = "yt-dlp" },
 ]
 
 [package.dev-dependencies]
@@ -572,7 +571,6 @@ requires-dist = [
     { name = "starlette", specifier = ">=0.40.0" },
     { name = "uvicorn", specifier = ">=0.20.0" },
     { name = "youtube-transcript-api", specifier = ">=1.1" },
-    { name = "yt-dlp", specifier = ">=2025.9.26" },
 ]
 
 [package.metadata.requires-dev]
@@ -1500,13 +1498,4 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/60/43/4104185a2eaa839daa693b30e15c37e7e58795e8e09ec414f22b3db54bec/youtube_transcript_api-1.2.4.tar.gz", hash = "sha256:b72d0e96a335df599d67cee51d49e143cff4f45b84bcafc202ff51291603ddcd", size = 469839 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/be/95/129ea37efd6cd6ed00f62baae6543345c677810b8a3bf0026756e1d3cf3c/youtube_transcript_api-1.2.4-py3-none-any.whl", hash = "sha256:03878759356da5caf5edac77431780b91448fb3d8c21d4496015bdc8a7bc43ff", size = 485227 },
-]
-
-[[package]]
-name = "yt-dlp"
-version = "2026.2.21"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/58/d9/55ffff25204733e94a507552ad984d5a8a8e4f9d1f0d91763e6b1a41c79b/yt_dlp-2026.2.21.tar.gz", hash = "sha256:4407dfc1a71fec0dee5ef916a8d4b66057812939b509ae45451fa8fb4376b539", size = 3116630 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/40/664c99ee36d80d84ce7a96cd98aebcb3d16c19e6c3ad3461d2cf5424040e/yt_dlp-2026.2.21-py3-none-any.whl", hash = "sha256:0d8408f5b6d20487f5caeb946dfd04f9bcd2f1a3a125b744a0a982b590e449f7", size = 3313392 },
 ]

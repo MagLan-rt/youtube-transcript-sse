@@ -29,7 +29,6 @@ dependencies = [
     "requests>=2.32.3",
     "rich-click>=1.8.8",
     "youtube-transcript-api>=1.1",
-    "yt-dlp>=2025.9.26",
     "uvicorn>=0.20.0",
     "starlette>=0.40.0",
     "sse-starlette>=2.0.0",
@@ -68,10 +67,3 @@ files = [
     { filename = "server.json", search = "download/v{current_version}", replace = "download/v{new_version}" },
 ]
 
-[tool.mypy]
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-overrides = [ { module = [
-    "yt_dlp.*",
-], ignore_missing_imports = true } ]
