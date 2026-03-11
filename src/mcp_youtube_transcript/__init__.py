@@ -139,30 +139,72 @@ def _get_video_info(ctx: AppContext, video_url: str) -> VideoInfo:
             "Accept-Language": "en-US,en;q=0.9",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         },
+        cookies={"CONSENT": "YES+cb.20210328-17-p0.en+FX+471"}
     )
     page.raise_for_status()
 
-    player_response = _extract_yt_initial_player_response(page.text)
-    video_details = player_response.get("videoDetails", {})
-    microformat = player_response.get("microformat", {}).get("playerMicroformatRenderer", {})
+    title = "Unknown"
+    description = ""
+    uploader = "Unknown"
+    duration_seconds = 0
+    upload_date = datetime.now(timezone.utc)
 
-    title = video_details.get("title", "Unknown")
-    description = video_details.get("shortDescription", "")
-    uploader = video_details.get("author", "Unknown")
+    # First try ytInitialPlayerResponse
+    try:
+        player_response = _extract_yt_initial_player_response(page.text)
+        video_details = player_response.get("videoDetails", {})
+        microformat = player_response.get("microformat", {}).get("playerMicroformatRenderer", {})
 
-    # Parse upload date
-    date_str = microformat.get("uploadDate") or microformat.get("publishDate", "")
-    if date_str:
-        try:
-            upload_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        except ValueError:
-            upload_date = datetime.now(timezone.utc)
-    else:
-        upload_date = datetime.now(timezone.utc)
+        if video_details:
+            title = video_details.get("title", "Unknown")
+            description = video_details.get("shortDescription", "")
+            uploader = video_details.get("author", "Unknown")
+            duration_seconds = int(video_details.get("lengthSeconds", 0))
 
-    # Parse duration
-    duration_seconds = int(video_details.get("lengthSeconds", 0))
-    duration_str = humanize.naturaldelta(timedelta(seconds=duration_seconds))
+            date_str = microformat.get("uploadDate") or microformat.get("publishDate", "")
+            if date_str:
+                try:
+                    upload_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+    except ValueError:
+        pass
+
+    # Fallback to BeautifulSoup if title is still Unknown
+    if title == "Unknown":
+        soup = BeautifulSoup(page.text, "html.parser")
+        
+        title_tag = soup.find("meta", {"name": "title"}) or soup.find("meta", property="og:title")
+        if title_tag and title_tag.get("content"):
+            title = title_tag["content"]
+        elif soup.title and soup.title.string:
+            title = soup.title.string.replace(" - YouTube", "").strip()
+            
+        desc_tag = soup.find("meta", {"name": "description"}) or soup.find("meta", property="og:description")
+        if desc_tag and desc_tag.get("content"):
+            description = desc_tag["content"]
+            
+        author_tag = soup.find("link", itemprop="name")
+        if author_tag and author_tag.get("content"):
+            uploader = author_tag["content"]
+            
+        date_tag = soup.find("meta", itemprop="uploadDate") or soup.find("meta", itemprop="datePublished")
+        if date_tag and date_tag.get("content"):
+            try:
+                upload_date = datetime.fromisoformat(date_tag["content"].replace("Z", "+00:00"))
+            except ValueError:
+                pass
+
+        duration_tag = soup.find("meta", itemprop="duration")
+        if duration_tag and duration_tag.get("content"):
+            match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_tag["content"])
+            if match:
+                h = int(match.group(1) or 0)
+                m = int(match.group(2) or 0)
+                s = int(match.group(3) or 0)
+                duration_seconds = h * 3600 + m * 60 + s
+
+    duration_str = humanize.naturaldelta(timedelta(seconds=duration_seconds)) if duration_seconds > 0 else "a moment"
 
     return VideoInfo(
         title=title,
