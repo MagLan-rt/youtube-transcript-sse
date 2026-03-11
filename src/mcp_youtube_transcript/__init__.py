@@ -7,14 +7,12 @@
 #  http://opensource.org/licenses/mit-license.php
 from __future__ import annotations
 
-import json
-import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from itertools import islice
-from typing import AsyncIterator, Tuple
+from typing import Any, AsyncIterator, Tuple
 from typing import Final
 from urllib.parse import urlparse, parse_qs
 
@@ -27,19 +25,27 @@ from mcp.server.fastmcp import Context
 from pydantic import Field, BaseModel, AwareDatetime
 from youtube_transcript_api import YouTubeTranscriptApi, FetchedTranscriptSnippet
 from youtube_transcript_api.proxies import WebshareProxyConfig, GenericProxyConfig, ProxyConfig
+from yt_dlp import YoutubeDL
+from yt_dlp.extractor.youtube import YoutubeIE
 
 
 @dataclass(frozen=True)
 class AppContext:
     http_client: requests.Session
     ytt_api: YouTubeTranscriptApi
+    dlp: YoutubeDL
 
 
 @asynccontextmanager
 async def _app_lifespan(_server: FastMCP, proxy_config: ProxyConfig | None) -> AsyncIterator[AppContext]:
-    with requests.Session() as http_client:
+    # Prepare YoutubeDL params with proxy support
+    ytdlp_params: dict[str, Any] = {"quiet": True}
+    ytdlp_params.update(_proxy_config_to_ytdlp_params(proxy_config))
+
+    with requests.Session() as http_client, YoutubeDL(params=ytdlp_params, auto_init=False) as dlp:
         ytt_api = YouTubeTranscriptApi(http_client=http_client, proxy_config=proxy_config)
-        yield AppContext(http_client=http_client, ytt_api=ytt_api)
+        dlp.add_info_extractor(YoutubeIE())
+        yield AppContext(http_client=http_client, ytt_api=ytt_api, dlp=dlp)
 
 
 class Transcript(BaseModel):
@@ -85,20 +91,38 @@ class VideoInfo(BaseModel):
     duration: str = Field(description="Duration of the video")
 
 
-def _extract_yt_initial_player_response(html: str) -> dict:
-    """Extract ytInitialPlayerResponse JSON from YouTube page HTML."""
-    pattern = r'var\s+ytInitialPlayerResponse\s*=\s*({.*?});\s*(?:var|</script)'
-    match = re.search(pattern, html, re.DOTALL)
-    if match:
-        return json.loads(match.group(1))
+def _parse_time_info(date: int, timestamp: int, duration: int) -> Tuple[datetime, str]:
+    parsed_date = datetime.strptime(str(date), "%Y%m%d").date()
+    parsed_time = datetime.strptime(str(timestamp), "%H%M%S%f").time()
+    upload_date = datetime.combine(parsed_date, parsed_time, timezone.utc)
+    duration_str = humanize.naturaldelta(timedelta(seconds=duration))
+    return upload_date, duration_str
 
-    # Fallback pattern
-    pattern2 = r'ytInitialPlayerResponse\s*=\s*({.*?});'
-    match2 = re.search(pattern2, html, re.DOTALL)
-    if match2:
-        return json.loads(match2.group(1))
 
-    raise ValueError("Could not find ytInitialPlayerResponse in page HTML")
+def _proxy_config_to_ytdlp_params(proxy_config: ProxyConfig | None) -> dict[str, str]:
+    """
+    Convert ProxyConfig to yt-dlp params format.
+
+    Args:
+        proxy_config: ProxyConfig object from youtube_transcript_api.proxies
+
+    Returns:
+        Dictionary with 'proxy' key if proxy is configured, empty dict otherwise.
+    """
+    if proxy_config is None:
+        return {}
+
+    # Get the requests-format proxy dict (format: {'http': '...', 'https': '...'})
+    proxy_dict = proxy_config.to_requests_dict()
+
+    # yt-dlp accepts a single 'proxy' parameter
+    # Prefer HTTPS over HTTP since YouTube uses HTTPS
+    if "https" in proxy_dict and proxy_dict["https"]:
+        return {"proxy": proxy_dict["https"]}
+    elif "http" in proxy_dict and proxy_dict["http"]:
+        return {"proxy": proxy_dict["http"]}
+
+    return {}
 
 
 def _parse_video_id(url: str) -> str:
@@ -148,113 +172,14 @@ def _get_transcript_snippets(ctx: AppContext, video_id: str, lang: str) -> Tuple
 
 @lru_cache
 def _get_video_info(ctx: AppContext, video_url: str) -> VideoInfo:
-    video_id = _parse_video_id(video_url)
-
-    title = "Unknown"
-    description = ""
-    uploader = "Unknown"
-    duration_seconds = 0
-    upload_date = datetime.now(timezone.utc)
-
-    # 1. Safely get Title and Uploader via YouTube oEmbed API (avoids HTML bot walls)
-    try:
-        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-        oembed_resp = ctx.http_client.get(oembed_url, timeout=10)
-        if oembed_resp.status_code == 200:
-            data = oembed_resp.json()
-            title = data.get("title", "Unknown")
-            uploader = data.get("author_name", "Unknown")
-    except Exception:
-        pass
-
-    # 2. Try scraping HTML for remaining fields (duration, description, upload_date)
-    try:
-        page = ctx.http_client.get(
-            f"https://www.youtube.com/watch?v={video_id}",
-            headers={
-                "Accept-Language": "en-US,en;q=0.9",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            },
-            cookies={"CONSENT": "YES+cb.20210328-17-p0.en+FX+471"},
-            timeout=10
-        )
-        page.raise_for_status()
-
-        # First try ytInitialPlayerResponse
-        try:
-            player_response = _extract_yt_initial_player_response(page.text)
-            video_details = player_response.get("videoDetails", {})
-            microformat = player_response.get("microformat", {}).get("playerMicroformatRenderer", {})
-
-            if video_details:
-                if title == "Unknown":
-                    title = video_details.get("title", "Unknown")
-                description = video_details.get("shortDescription", "")
-                if uploader == "Unknown":
-                    uploader = video_details.get("author", "Unknown")
-                duration_seconds = int(video_details.get("lengthSeconds", 0))
-
-                date_str = microformat.get("uploadDate") or microformat.get("publishDate", "")
-                if date_str:
-                    try:
-                        upload_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                    except ValueError:
-                        pass
-        except ValueError:
-            pass
-
-        # Fallback to BeautifulSoup if description or duration was missed
-        if not description or duration_seconds == 0:
-            soup = BeautifulSoup(page.text, "html.parser")
-            
-            if title == "Unknown":
-                title_tag = soup.find("meta", {"name": "title"}) or soup.find("meta", property="og:title")
-                if title_tag and title_tag.get("content"):
-                    title = title_tag["content"]
-                elif soup.title and soup.title.string:
-                    extracted_title = soup.title.string.replace(" - YouTube", "").strip()
-                    if extracted_title != "YouTube":
-                        title = extracted_title
-                    
-            if not description:
-                desc_tag = soup.find("meta", {"name": "description"}) or soup.find("meta", property="og:description")
-                if desc_tag and desc_tag.get("content"):
-                    desc = desc_tag["content"]
-                    if not desc.startswith("Enjoy the videos and music you love"):
-                        description = desc
-                
-            if uploader == "Unknown":
-                author_tag = soup.find("link", itemprop="name")
-                if author_tag and author_tag.get("content"):
-                    uploader = author_tag["content"]
-                
-            date_tag = soup.find("meta", itemprop="uploadDate") or soup.find("meta", itemprop="datePublished")
-            if date_tag and date_tag.get("content"):
-                try:
-                    upload_date = datetime.fromisoformat(date_tag["content"].replace("Z", "+00:00"))
-                except ValueError:
-                    pass
-
-            if duration_seconds == 0:
-                duration_tag = soup.find("meta", itemprop="duration")
-                if duration_tag and duration_tag.get("content"):
-                    match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_tag["content"])
-                    if match:
-                        h = int(match.group(1) or 0)
-                        m = int(match.group(2) or 0)
-                        s = int(match.group(3) or 0)
-                        duration_seconds = h * 3600 + m * 60 + s
-    except Exception:
-        pass
-
-    duration_str = humanize.naturaldelta(timedelta(seconds=duration_seconds)) if duration_seconds > 0 else "a moment"
-
+    res = ctx.dlp.extract_info(video_url, download=False)
+    upload_date, duration = _parse_time_info(res["upload_date"], res["timestamp"], res["duration"])
     return VideoInfo(
-        title=title,
-        description=description,
-        uploader=uploader,
+        title=res["title"],
+        description=res["description"],
+        uploader=res["uploader"],
         upload_date=upload_date,
-        duration=duration_str,
+        duration=duration,
     )
 
 
