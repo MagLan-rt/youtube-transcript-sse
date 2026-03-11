@@ -29,7 +29,7 @@ WORKDIR /app
 
 # Install deno (required by yt-dlp for YouTube JavaScript extraction)
 RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates \
-    && curl -fsSL https://dl.deno.land/release/latest/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+    && curl -fsSL https://github.com/denoland/deno/releases/latest/download/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
     && unzip /tmp/deno.zip -d /usr/local/bin/ \
     && chmod +x /usr/local/bin/deno \
     && rm /tmp/deno.zip \
