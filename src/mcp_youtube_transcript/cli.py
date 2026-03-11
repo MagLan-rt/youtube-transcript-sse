@@ -51,5 +51,8 @@ def main(
     logger = logging.getLogger(__name__)
 
     logger.info(f"starting Youtube Transcript MCP server on {host}:{port} with SSE transport")
-    server(response_limit, webshare_proxy_username, webshare_proxy_password, http_proxy, https_proxy, host, port).run(transport="sse")
+    mcp_app = server(response_limit, webshare_proxy_username, webshare_proxy_password, http_proxy, https_proxy, host, port)
+    import uvicorn
+    starlette_app = mcp_app.sse_app()
+    uvicorn.run(starlette_app, host=host, port=port)
     logger.info("closed Youtube Transcript MCP server")
