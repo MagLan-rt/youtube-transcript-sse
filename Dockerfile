@@ -27,6 +27,15 @@ FROM python:3.13-slim-bookworm
 
 WORKDIR /app
 
+# Install deno (required by yt-dlp for YouTube JavaScript extraction)
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip ca-certificates \
+    && curl -fsSL https://dl.deno.land/release/latest/deno-x86_64-unknown-linux-gnu.zip -o /tmp/deno.zip \
+    && unzip /tmp/deno.zip -d /usr/local/bin/ \
+    && chmod +x /usr/local/bin/deno \
+    && rm /tmp/deno.zip \
+    && apt-get purge -y --auto-remove curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=uv --chown=app:app /app/.venv /app/.venv
 
 # Place executables in the environment at the front of the path
