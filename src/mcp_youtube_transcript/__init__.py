@@ -133,15 +133,6 @@ def _get_transcript_snippets(ctx: AppContext, video_id: str, lang: str) -> Tuple
 @lru_cache
 def _get_video_info(ctx: AppContext, video_url: str) -> VideoInfo:
     video_id = _parse_video_id(video_url)
-    page = ctx.http_client.get(
-        f"https://www.youtube.com/watch?v={video_id}",
-        headers={
-            "Accept-Language": "en-US,en;q=0.9",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        },
-        cookies={"CONSENT": "YES+cb.20210328-17-p0.en+FX+471"}
-    )
-    page.raise_for_status()
 
     title = "Unknown"
     description = ""
@@ -149,60 +140,96 @@ def _get_video_info(ctx: AppContext, video_url: str) -> VideoInfo:
     duration_seconds = 0
     upload_date = datetime.now(timezone.utc)
 
-    # First try ytInitialPlayerResponse
+    # 1. Safely get Title and Uploader via YouTube oEmbed API (avoids HTML bot walls)
     try:
-        player_response = _extract_yt_initial_player_response(page.text)
-        video_details = player_response.get("videoDetails", {})
-        microformat = player_response.get("microformat", {}).get("playerMicroformatRenderer", {})
-
-        if video_details:
-            title = video_details.get("title", "Unknown")
-            description = video_details.get("shortDescription", "")
-            uploader = video_details.get("author", "Unknown")
-            duration_seconds = int(video_details.get("lengthSeconds", 0))
-
-            date_str = microformat.get("uploadDate") or microformat.get("publishDate", "")
-            if date_str:
-                try:
-                    upload_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-                except ValueError:
-                    pass
-    except ValueError:
+        oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        oembed_resp = ctx.http_client.get(oembed_url, timeout=10)
+        if oembed_resp.status_code == 200:
+            data = oembed_resp.json()
+            title = data.get("title", "Unknown")
+            uploader = data.get("author_name", "Unknown")
+    except Exception:
         pass
 
-    # Fallback to BeautifulSoup if title is still Unknown
-    if title == "Unknown":
-        soup = BeautifulSoup(page.text, "html.parser")
-        
-        title_tag = soup.find("meta", {"name": "title"}) or soup.find("meta", property="og:title")
-        if title_tag and title_tag.get("content"):
-            title = title_tag["content"]
-        elif soup.title and soup.title.string:
-            title = soup.title.string.replace(" - YouTube", "").strip()
-            
-        desc_tag = soup.find("meta", {"name": "description"}) or soup.find("meta", property="og:description")
-        if desc_tag and desc_tag.get("content"):
-            description = desc_tag["content"]
-            
-        author_tag = soup.find("link", itemprop="name")
-        if author_tag and author_tag.get("content"):
-            uploader = author_tag["content"]
-            
-        date_tag = soup.find("meta", itemprop="uploadDate") or soup.find("meta", itemprop="datePublished")
-        if date_tag and date_tag.get("content"):
-            try:
-                upload_date = datetime.fromisoformat(date_tag["content"].replace("Z", "+00:00"))
-            except ValueError:
-                pass
+    # 2. Try scraping HTML for remaining fields (duration, description, upload_date)
+    try:
+        page = ctx.http_client.get(
+            f"https://www.youtube.com/watch?v={video_id}",
+            headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            },
+            cookies={"CONSENT": "YES+cb.20210328-17-p0.en+FX+471"},
+            timeout=10
+        )
+        page.raise_for_status()
 
-        duration_tag = soup.find("meta", itemprop="duration")
-        if duration_tag and duration_tag.get("content"):
-            match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_tag["content"])
-            if match:
-                h = int(match.group(1) or 0)
-                m = int(match.group(2) or 0)
-                s = int(match.group(3) or 0)
-                duration_seconds = h * 3600 + m * 60 + s
+        # First try ytInitialPlayerResponse
+        try:
+            player_response = _extract_yt_initial_player_response(page.text)
+            video_details = player_response.get("videoDetails", {})
+            microformat = player_response.get("microformat", {}).get("playerMicroformatRenderer", {})
+
+            if video_details:
+                if title == "Unknown":
+                    title = video_details.get("title", "Unknown")
+                description = video_details.get("shortDescription", "")
+                if uploader == "Unknown":
+                    uploader = video_details.get("author", "Unknown")
+                duration_seconds = int(video_details.get("lengthSeconds", 0))
+
+                date_str = microformat.get("uploadDate") or microformat.get("publishDate", "")
+                if date_str:
+                    try:
+                        upload_date = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+                    except ValueError:
+                        pass
+        except ValueError:
+            pass
+
+        # Fallback to BeautifulSoup if description or duration was missed
+        if not description or duration_seconds == 0:
+            soup = BeautifulSoup(page.text, "html.parser")
+            
+            if title == "Unknown":
+                title_tag = soup.find("meta", {"name": "title"}) or soup.find("meta", property="og:title")
+                if title_tag and title_tag.get("content"):
+                    title = title_tag["content"]
+                elif soup.title and soup.title.string:
+                    extracted_title = soup.title.string.replace(" - YouTube", "").strip()
+                    if extracted_title != "YouTube":
+                        title = extracted_title
+                    
+            if not description:
+                desc_tag = soup.find("meta", {"name": "description"}) or soup.find("meta", property="og:description")
+                if desc_tag and desc_tag.get("content"):
+                    desc = desc_tag["content"]
+                    if not desc.startswith("Enjoy the videos and music you love"):
+                        description = desc
+                
+            if uploader == "Unknown":
+                author_tag = soup.find("link", itemprop="name")
+                if author_tag and author_tag.get("content"):
+                    uploader = author_tag["content"]
+                
+            date_tag = soup.find("meta", itemprop="uploadDate") or soup.find("meta", itemprop="datePublished")
+            if date_tag and date_tag.get("content"):
+                try:
+                    upload_date = datetime.fromisoformat(date_tag["content"].replace("Z", "+00:00"))
+                except ValueError:
+                    pass
+
+            if duration_seconds == 0:
+                duration_tag = soup.find("meta", itemprop="duration")
+                if duration_tag and duration_tag.get("content"):
+                    match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_tag["content"])
+                    if match:
+                        h = int(match.group(1) or 0)
+                        m = int(match.group(2) or 0)
+                        s = int(match.group(3) or 0)
+                        duration_seconds = h * 3600 + m * 60 + s
+    except Exception:
+        pass
 
     duration_str = humanize.naturaldelta(timedelta(seconds=duration_seconds)) if duration_seconds > 0 else "a moment"
 
