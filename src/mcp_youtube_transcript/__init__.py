@@ -38,9 +38,15 @@ class AppContext:
 
 @asynccontextmanager
 async def _app_lifespan(_server: FastMCP, proxy_config: ProxyConfig | None) -> AsyncIterator[AppContext]:
+    import os
+    cookies_path = os.environ.get("YOUTUBE_COOKIES_FILE", "/app/cookies.txt")
+    
     # Prepare YoutubeDL params with proxy support
     ytdlp_params: dict[str, Any] = {"quiet": True}
     ytdlp_params.update(_proxy_config_to_ytdlp_params(proxy_config))
+    
+    if os.path.exists(cookies_path):
+        ytdlp_params["cookiefile"] = cookies_path
 
     with requests.Session() as http_client, YoutubeDL(params=ytdlp_params, auto_init=False) as dlp:
         ytt_api = YouTubeTranscriptApi(http_client=http_client, proxy_config=proxy_config)
@@ -152,21 +158,15 @@ def _get_transcript_snippets(ctx: AppContext, video_id: str, lang: str) -> Tuple
 
     import os
     cookies_path = os.environ.get("YOUTUBE_COOKIES_FILE", "/app/cookies.txt")
-    if os.path.exists(cookies_path):
-        transcripts = ctx.ytt_api.list_transcripts(video_id, cookies=cookies_path)
-        try:
-            transcript = transcripts.find_transcript(languages)
-        except Exception:
-            transcript = transcripts.find_generated_transcript(['ar', 'en'] + languages)
-        snippets = transcript.fetch()
-    else:
-        transcripts = ctx.ytt_api.list_transcripts(video_id)
-        try:
-            transcript = transcripts.find_transcript(languages)
-        except Exception:
-            transcript = transcripts.find_generated_transcript(['ar', 'en'] + languages)
-        snippets = transcript.fetch()
-        
+    cookies = cookies_path if os.path.exists(cookies_path) else None
+    
+    transcripts = ctx.ytt_api.list_transcripts(video_id, cookies=cookies)
+    try:
+        transcript = transcripts.find_transcript(languages)
+    except Exception:
+        # Fallback to Arabic/English if specifically requested language isn't found
+        transcript = transcripts.find_generated_transcript(['ar', 'en'] + languages)
+    snippets = transcript.fetch()
     return title, snippets
 
 
