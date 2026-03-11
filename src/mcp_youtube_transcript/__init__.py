@@ -39,6 +39,9 @@ class AppContext:
 @asynccontextmanager
 async def _app_lifespan(_server: FastMCP, proxy_config: ProxyConfig | None) -> AsyncIterator[AppContext]:
     import os
+    import logging
+    logger = logging.getLogger(__name__)
+    
     cookies_path = os.environ.get("YOUTUBE_COOKIES_FILE", "/app/cookies.txt")
     
     # Prepare YoutubeDL params with proxy support
@@ -46,7 +49,10 @@ async def _app_lifespan(_server: FastMCP, proxy_config: ProxyConfig | None) -> A
     ytdlp_params.update(_proxy_config_to_ytdlp_params(proxy_config))
     
     if os.path.exists(cookies_path):
+        logger.info(f"Found cookies file at {cookies_path}")
         ytdlp_params["cookiefile"] = cookies_path
+    else:
+        logger.warning(f"Cookies file NOT found at {cookies_path}")
 
     with requests.Session() as http_client, YoutubeDL(params=ytdlp_params, auto_init=False) as dlp:
         ytt_api = YouTubeTranscriptApi(http_client=http_client, proxy_config=proxy_config)
@@ -97,11 +103,31 @@ class VideoInfo(BaseModel):
     duration: str = Field(description="Duration of the video")
 
 
-def _parse_time_info(date: int, timestamp: int, duration: int) -> Tuple[datetime, str]:
-    parsed_date = datetime.strptime(str(date), "%Y%m%d").date()
-    parsed_time = datetime.strptime(str(timestamp), "%H%M%S%f").time()
-    upload_date = datetime.combine(parsed_date, parsed_time, timezone.utc)
-    duration_str = humanize.naturaldelta(timedelta(seconds=duration))
+def _parse_time_info(res: dict[str, Any]) -> Tuple[datetime, str]:
+    # Extract upload date
+    upload_date = None
+    if "upload_date" in res and res["upload_date"]:
+        try:
+            upload_date = datetime.strptime(res["upload_date"], "%Y%m%d")
+        except ValueError:
+            pass
+    
+    # Fallback to timestamp or now
+    if not upload_date:
+        ts = res.get("timestamp")
+        if ts:
+            upload_date = datetime.fromtimestamp(ts, tz=timezone.utc)
+        else:
+            upload_date = datetime.now(timezone.utc)
+            
+    if upload_date.tzinfo is None:
+        upload_date = upload_date.replace(tzinfo=timezone.utc)
+        
+    # Format duration
+    duration_str = "Unknown"
+    if "duration" in res and res["duration"]:
+        duration_str = humanize.naturaldelta(timedelta(seconds=res["duration"]))
+        
     return upload_date, duration_str
 
 
@@ -173,11 +199,11 @@ def _get_transcript_snippets(ctx: AppContext, video_id: str, lang: str) -> Tuple
 @lru_cache
 def _get_video_info(ctx: AppContext, video_url: str) -> VideoInfo:
     res = ctx.dlp.extract_info(video_url, download=False)
-    upload_date, duration = _parse_time_info(res["upload_date"], res["timestamp"], res["duration"])
+    upload_date, duration = _parse_time_info(res)
     return VideoInfo(
-        title=res["title"],
-        description=res["description"],
-        uploader=res["uploader"],
+        title=res.get("title", "Unknown"),
+        description=res.get("description", ""),
+        uploader=res.get("uploader", "Unknown"),
         upload_date=upload_date,
         duration=duration,
     )
