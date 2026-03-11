@@ -126,8 +126,24 @@ def _get_transcript_snippets(ctx: AppContext, video_id: str, lang: str) -> Tuple
     soup = BeautifulSoup(page.text, "html.parser")
     title = soup.title.string if soup.title and soup.title.string else "Transcript"
 
-    transcripts = ctx.ytt_api.fetch(video_id, languages=languages)
-    return title, transcripts.snippets
+    import os
+    cookies_path = os.environ.get("YOUTUBE_COOKIES_FILE", "/app/cookies.txt")
+    if os.path.exists(cookies_path):
+        transcripts = ctx.ytt_api.list_transcripts(video_id, cookies=cookies_path)
+        try:
+            transcript = transcripts.find_transcript(languages)
+        except Exception:
+            transcript = transcripts.find_generated_transcript(['ar', 'en'] + languages)
+        snippets = transcript.fetch()
+    else:
+        transcripts = ctx.ytt_api.list_transcripts(video_id)
+        try:
+            transcript = transcripts.find_transcript(languages)
+        except Exception:
+            transcript = transcripts.find_generated_transcript(['ar', 'en'] + languages)
+        snippets = transcript.fetch()
+        
+    return title, snippets
 
 
 @lru_cache
