@@ -33,6 +33,8 @@ from mcp_youtube_transcript import server
 )
 @click.option("--http-proxy", metavar="URL", envvar="HTTP_PROXY", help="HTTP proxy server URL.")
 @click.option("--https-proxy", metavar="URL", envvar="HTTPS_PROXY", help="HTTPS proxy server URL.")
+@click.option("--port", type=int, default=8000, help="Port to listen on for SSE transport.")
+@click.option("--host", type=str, default="0.0.0.0", help="Host to listen on for SSE transport.")
 @click.version_option()
 def main(
     response_limit: int | None,
@@ -40,12 +42,14 @@ def main(
     webshare_proxy_password: str | None,
     http_proxy: str | None,
     https_proxy: str | None,
+    port: int,
+    host: str,
 ) -> None:
     """YouTube Transcript MCP server."""
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
-    logger.info("starting Youtube Transcript MCP server")
-    server(response_limit, webshare_proxy_username, webshare_proxy_password, http_proxy, https_proxy).run()
+    logger.info(f"starting Youtube Transcript MCP server on {host}:{port} with SSE transport")
+    server(response_limit, webshare_proxy_username, webshare_proxy_password, http_proxy, https_proxy, host, port).run(transport="sse")
     logger.info("closed Youtube Transcript MCP server")

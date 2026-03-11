@@ -173,6 +173,8 @@ def server(
     webshare_proxy_password: str | None = None,
     http_proxy: str | None = None,
     https_proxy: str | None = None,
+    host: str = "0.0.0.0",
+    port: int = 8000,
 ) -> FastMCP:
     """Initializes the MCP server."""
 
@@ -182,7 +184,7 @@ def server(
     elif http_proxy or https_proxy:
         proxy_config = GenericProxyConfig(http_proxy, https_proxy)
 
-    mcp = FastMCP("Youtube Transcript", lifespan=partial(_app_lifespan, proxy_config=proxy_config))
+    mcp = FastMCP("Youtube Transcript", lifespan=partial(_app_lifespan, proxy_config=proxy_config), host=host, port=port)
 
     @mcp.tool()
     async def get_transcript(
